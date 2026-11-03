@@ -1,0 +1,128 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Taquilla Cevichestudios</title>
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f4f4f4;
+      margin: 0;
+      padding: 24px;
+      color: #222;
+    }
+    main {
+      max-width: 480px;
+      margin: auto;
+      background: white;
+      padding: 22px;
+      border-radius: 14px;
+      box-shadow: 0 2px 12px #0002;
+    }
+    h2 { text-align: center; }
+    label { display: block; margin-top: 16px; font-weight: bold; }
+    input, button {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 13px;
+      margin-top: 8px;
+      border-radius: 8px;
+      font-size: 16px;
+    }
+    input { border: 1px solid #bbb; }
+    button {
+      border: 0;
+      background: #222;
+      color: white;
+      cursor: pointer;
+    }
+    #reader { margin-top: 20px; }
+    #resultado {
+      margin-top: 18px;
+      padding: 12px;
+      background: #eee;
+      border-radius: 8px;
+      overflow-wrap: anywhere;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h2>Taquilla Cevichestudios</h2>
+  <p>Ingresa el enlace de tu tiquetera y escanea el QR del comprador.</p>
+
+  <label for="appUrl">Enlace de la aplicación de taquilla</label>
+  <input id="appUrl" type="url" placeholder="https://script.google.com/macros/s/.../exec">
+
+  <button id="iniciar">Abrir cámara y escanear QR</button>
+  <button id="detener" hidden>Detener cámara</button>
+
+  <div id="reader"></div>
+  <div id="resultado">Esperando lectura del código QR.</div>
+</main>
+
+<script>
+  let scanner = null;
+
+  const resultado = document.getElementById("resultado");
+  const iniciar = document.getElementById("iniciar");
+  const detener = document.getElementById("detener");
+  const appUrl = document.getElementById("appUrl");
+
+  iniciar.addEventListener("click", async () => {
+    resultado.textContent = "Solicitando acceso a la cámara...";
+    try {
+      scanner = new Html5Qrcode("reader");
+      await scanner.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        async (texto) => {
+          await scanner.stop();
+          scanner = null;
+          detener.hidden = true;
+          resultado.textContent = "Código leído. Abriendo la entrada...";
+          let destino = texto.trim();
+
+          try {
+            const leido = new URL(destino);
+            const token = leido.searchParams.get("t");
+            if (token) {
+              const base = appUrl.value.trim() || leido.origin + leido.pathname;
+              destino = base + "?t=" + encodeURIComponent(token);
+            }
+          } catch (e) {
+            const base = appUrl.value.trim();
+            if (!base) {
+              resultado.textContent =
+                "QR leído: " + texto +
+                ". Falta ingresar el enlace de la tiquetera.";
+              return;
+            }
+            destino = base + "?t=" + encodeURIComponent(texto);
+          }
+
+          window.location.href = destino;
+        },
+        () => {}
+      );
+      detener.hidden = false;
+      resultado.textContent = "Cámara activa. Enfoca el código QR.";
+    } catch (error) {
+      resultado.textContent = "No se pudo abrir la cámara: " + error;
+    }
+  });
+
+  detener.addEventListener("click", async () => {
+    if (scanner) {
+      await scanner.stop();
+      scanner = null;
+    }
+    detener.hidden = true;
+    resultado.textContent = "Cámara detenida.";
+  });
+</script>
+</body>
+</html>
