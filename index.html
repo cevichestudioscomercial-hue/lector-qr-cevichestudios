@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -7,122 +6,309 @@
   <title>Taquilla Cevichestudios</title>
   <script src="https://unpkg.com/html5-qrcode"></script>
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      background: #f4f4f4;
-      margin: 0;
-      padding: 24px;
-      color: #222;
-    }
-    main {
-      max-width: 480px;
-      margin: auto;
-      background: white;
-      padding: 22px;
-      border-radius: 14px;
-      box-shadow: 0 2px 12px #0002;
-    }
-    h2 { text-align: center; }
-    label { display: block; margin-top: 16px; font-weight: bold; }
-    input, button {
-      box-sizing: border-box;
-      width: 100%;
-      padding: 13px;
-      margin-top: 8px;
-      border-radius: 8px;
-      font-size: 16px;
-    }
-    input { border: 1px solid #bbb; }
-    button {
-      border: 0;
-      background: #222;
-      color: white;
-      cursor: pointer;
-    }
-    #reader { margin-top: 20px; }
-    #resultado {
-      margin-top: 18px;
-      padding: 12px;
-      background: #eee;
-      border-radius: 8px;
-      overflow-wrap: anywhere;
-    }
+    *{box-sizing:border-box}
+    body{font-family:Arial,sans-serif;background:#f3f3f3;margin:0;padding:16px;color:#222}
+    main{max-width:520px;margin:auto;background:white;padding:20px;border-radius:14px;box-shadow:0 2px 12px #0002}
+    h2{text-align:center}
+    button,input{width:100%;padding:13px;margin-top:9px;border-radius:8px;font-size:16px}
+    button{border:0;background:#222;color:white;cursor:pointer}
+    button:disabled{opacity:.5}
+    input{border:1px solid #bbb}
+    #reader{width:100%;margin-top:18px}
+    #resultado{margin-top:16px;padding:14px;background:#eee;border-radius:8px;line-height:1.5}
+    .dato{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid #ddd}
+    .acciones{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+    .acciones button{margin:0}
+    .verde{background:#087443}
+    .rojo{background:#a12626}
+    .oculto{display:none}
+    .estado{font-weight:bold;text-align:center;margin-top:12px}
+    .pequeno{font-size:13px;color:#666;text-align:center}
   </style>
 </head>
 <body>
 <main>
   <h2>Taquilla Cevichestudios</h2>
-  <p>Ingresa el enlace de tu tiquetera y escanea el QR del comprador.</p>
+  <p class="pequeno">Lector de ingreso de asistentes</p>
 
-  <label for="appUrl">Enlace de la aplicación de taquilla</label>
-  <input id="appUrl" type="url" placeholder="https://script.google.com/macros/s/.../exec">
+  <div id="configuracion" class="oculto">
+    <p>Falta iniciar desde el panel de la tiquetera.</p>
+  </div>
 
-  <button id="iniciar">Abrir cámara y escanear QR</button>
-  <button id="detener" hidden>Detener cámara</button>
+  <div id="zonaEscaner">
+    <button id="iniciar" class="verde">ABRIR CÁMARA</button>
+    <button id="detener" class="rojo oculto">DETENER CÁMARA</button>
+    <div id="reader"></div>
+  </div>
 
-  <div id="reader"></div>
   <div id="resultado">Esperando lectura del código QR.</div>
+
+  <div id="compra" class="oculto">
+    <div id="datosCompra"></div>
+    <label for="cantidad">¿Cuántas boletas ingresan?</label>
+    <input id="cantidad" type="number" min="1" step="1">
+    <div class="acciones">
+      <button id="todas" class="verde">Registrar todas</button>
+      <button id="parcial">Registrar cantidad</button>
+    </div>
+    <button id="cancelar" class="rojo">Cancelar y seguir escaneando</button>
+  </div>
+
+  <div id="mensaje" class="estado"></div>
 </main>
 
 <script>
+  const params = new URLSearchParams(window.location.search);
+  let API_URL = params.get('api') || '';
+  let SESSION = params.get('session') || '';
+
+  // Guardar la sesión en esta pestaña y quitar los datos de la dirección.
+  if (API_URL && SESSION) {
+    sessionStorage.setItem('taquilla_api', API_URL);
+    sessionStorage.setItem('taquilla_session', SESSION);
+    history.replaceState({}, document.title, window.location.pathname);
+  } else {
+    API_URL = sessionStorage.getItem('taquilla_api') || '';
+    SESSION = sessionStorage.getItem('taquilla_session') || '';
+  }
+
   let scanner = null;
+  let compraActual = null;
+  let codigoActual = '';
+  let procesando = false;
+  let camaraActiva = false;
 
-  const resultado = document.getElementById("resultado");
-  const iniciar = document.getElementById("iniciar");
-  const detener = document.getElementById("detener");
-  const appUrl = document.getElementById("appUrl");
+  const $ = id => document.getElementById(id);
 
-  iniciar.addEventListener("click", async () => {
-    resultado.textContent = "Solicitando acceso a la cámara...";
+  function mostrarMensaje(texto) {
+    $('mensaje').textContent = texto;
+  }
+
+  function llamadaAPI(action, datos = {}) {
+    return new Promise((resolve, reject) => {
+      if (!API_URL || !SESSION) {
+        reject(new Error('Sesión no válida. Abre nuevamente el lector desde la tiquetera.'));
+        return;
+      }
+
+      const callback = 'taquilla_cb_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+      const script = document.createElement('script');
+      let terminado = false;
+
+      const limpiar = () => {
+        if (terminado) return;
+        terminado = true;
+        delete window[callback];
+        script.remove();
+      };
+
+      window[callback] = respuesta => {
+        limpiar();
+        if (respuesta && respuesta.ok) resolve(respuesta.data);
+        else reject(new Error(respuesta?.message || 'No se pudo completar la operación.'));
+      };
+
+      const parametros = new URLSearchParams({
+        api: 'taquilla',
+        callback: callback,
+        session: SESSION,
+        action: action,
+        _: String(Date.now())
+      });
+
+      Object.keys(datos).forEach(k => parametros.set(k, datos[k]));
+
+      script.onerror = () => {
+        limpiar();
+        reject(new Error('No se pudo conectar con la tiquetera. Revisa la conexión.'));
+      };
+
+      script.src = API_URL + '?' + parametros.toString();
+      document.body.appendChild(script);
+
+      setTimeout(() => {
+        if (!terminado) {
+          limpiar();
+          reject(new Error('La conexión tardó demasiado. Intenta nuevamente.'));
+        }
+      }, 20000);
+    });
+  }
+
+  function extraerCodigo(texto) {
+    const valor = String(texto || '').trim();
+
     try {
-      scanner = new Html5Qrcode("reader");
+      const url = new URL(valor);
+      const token = url.searchParams.get('t');
+      if (token) return token;
+    } catch (e) {}
+
+    return valor;
+  }
+
+  async function iniciarCamara() {
+    if (!API_URL || !SESSION) {
+      $('resultado').textContent = 'Abre el lector desde el botón del panel de taquilla.';
+      return;
+    }
+
+    try {
+      if (!scanner) scanner = new Html5Qrcode('reader');
+
       await scanner.start(
-        { facingMode: "environment" },
-        { fps: 10, qrbox: { width: 250, height: 250 } },
-        async (texto) => {
-          await scanner.stop();
-          scanner = null;
-          detener.hidden = true;
-          resultado.textContent = "Código leído. Abriendo la entrada...";
-          let destino = texto.trim();
-
-          try {
-            const leido = new URL(destino);
-            const token = leido.searchParams.get("t");
-            if (token) {
-              const base = appUrl.value.trim() || leido.origin + leido.pathname;
-              destino = base + "?t=" + encodeURIComponent(token);
-            }
-          } catch (e) {
-            const base = appUrl.value.trim();
-            if (!base) {
-              resultado.textContent =
-                "QR leído: " + texto +
-                ". Falta ingresar el enlace de la tiquetera.";
-              return;
-            }
-            destino = base + "?t=" + encodeURIComponent(texto);
-          }
-
-          window.location.href = destino;
-        },
+        { facingMode: 'environment' },
+        { fps: 12, qrbox: { width: 250, height: 250 } },
+        texto => procesarQR(texto),
         () => {}
       );
-      detener.hidden = false;
-      resultado.textContent = "Cámara activa. Enfoca el código QR.";
+
+      camaraActiva = true;
+      $('iniciar').classList.add('oculto');
+      $('detener').classList.remove('oculto');
+      $('resultado').textContent = 'Cámara activa. Enfoca el QR del comprador.';
+      mostrarMensaje('');
+
     } catch (error) {
-      resultado.textContent = "No se pudo abrir la cámara: " + error;
+      $('resultado').textContent = 'No se pudo abrir la cámara: ' + error;
     }
+  }
+
+  async function detenerCamara() {
+    if (scanner && camaraActiva) {
+      try {
+        await scanner.stop();
+      } catch (e) {}
+    }
+
+    camaraActiva = false;
+    $('iniciar').classList.remove('oculto');
+    $('detener').classList.add('oculto');
+  }
+
+  async function procesarQR(texto) {
+    if (procesando || compraActual) return;
+
+    procesando = true;
+    codigoActual = extraerCodigo(texto);
+
+    await detenerCamara();
+
+    $('resultado').textContent = 'Consultando compra...';
+    mostrarMensaje('');
+
+    try {
+      const pedido = await llamadaAPI('buscar', { code: codigoActual });
+      compraActual = pedido;
+      mostrarCompra(pedido);
+    } catch (error) {
+      $('resultado').textContent = error.message;
+      mostrarMensaje('Escanea nuevamente cuando estés listo.');
+      procesando = false;
+      setTimeout(() => iniciarCamara(), 1800);
+    }
+  }
+
+  function mostrarCompra(p) {
+    $('compra').classList.remove('oculto');
+
+    $('datosCompra').innerHTML = '';
+
+    const datos = [
+      ['Comprador', p.buyer],
+      ['Compra', p.id],
+      ['Evento', p.event],
+      ['Boletas compradas', p.bought],
+      ['Ya ingresaron', p.entered],
+      ['Pendientes', p.pending]
+    ];
+
+    datos.forEach(([titulo, valor]) => {
+      const fila = document.createElement('div');
+      fila.className = 'dato';
+
+      const a = document.createElement('strong');
+      a.textContent = titulo;
+
+      const b = document.createElement('span');
+      b.textContent = valor;
+
+      fila.append(a, b);
+      $('datosCompra').appendChild(fila);
+    });
+
+    $('cantidad').value = p.pending;
+    $('cantidad').max = p.pending;
+    $('cantidad').min = 1;
+    $('cantidad').disabled = p.pending === 0;
+    $('todas').disabled = p.pending === 0;
+    $('parcial').disabled = p.pending === 0;
+
+    $('resultado').textContent = p.pending === 0
+      ? 'Esta compra ya tiene todas sus boletas ingresadas.'
+      : 'Compra encontrada. Confirma el ingreso.';
+  }
+
+  async function registrar(cantidad) {
+    if (!compraActual) return;
+
+    if (!Number.isInteger(cantidad) || cantidad < 1 || cantidad > compraActual.pending) {
+      mostrarMensaje('Cantidad inválida. Pendientes: ' + compraActual.pending);
+      return;
+    }
+
+    $('todas').disabled = true;
+    $('parcial').disabled = true;
+    mostrarMensaje('Registrando ingreso...');
+
+    try {
+      const actualizado = await llamadaAPI('registrar', {
+        code: codigoActual,
+        amount: cantidad
+      });
+
+      compraActual = actualizado;
+      mostrarCompra(actualizado);
+      mostrarMensaje('Ingreso registrado correctamente.');
+
+      setTimeout(() => siguienteEscaneo(), 1300);
+
+    } catch (error) {
+      mostrarMensaje(error.message);
+      $('todas').disabled = false;
+      $('parcial').disabled = false;
+    }
+  }
+
+  function siguienteEscaneo() {
+    compraActual = null;
+    codigoActual = '';
+    procesando = false;
+
+    $('compra').classList.add('oculto');
+    $('resultado').textContent = 'Listo para escanear al siguiente comprador.';
+    mostrarMensaje('');
+
+    iniciarCamara();
+  }
+
+  $('iniciar').addEventListener('click', iniciarCamara);
+  $('detener').addEventListener('click', detenerCamara);
+
+  $('todas').addEventListener('click', () => {
+    if (compraActual) registrar(compraActual.pending);
   });
 
-  detener.addEventListener("click", async () => {
-    if (scanner) {
-      await scanner.stop();
-      scanner = null;
-    }
-    detener.hidden = true;
-    resultado.textContent = "Cámara detenida.";
+  $('parcial').addEventListener('click', () => {
+    registrar(Number($('cantidad').value));
   });
+
+  $('cancelar').addEventListener('click', siguienteEscaneo);
+
+  if (!API_URL || !SESSION) {
+    $('resultado').textContent = 'Abre este lector desde el botón ABRIR LECTOR QR del panel de taquilla.';
+    $('iniciar').disabled = true;
+  }
 </script>
 </body>
 </html>
